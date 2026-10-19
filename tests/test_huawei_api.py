@@ -313,8 +313,8 @@ class ParseHostinfoTests(unittest.TestCase):
         client = huawei_api.parse_hostinfo([self.active_host(
             TxKBytes=0, RxKBytes=-1, rate='866.7', UpRate=3.5, DownRate='-2',
             staRssi='-42', IPAddress='not-an-ip', MACAddress='AA:BB:CC:DD:EE:0A')])[0]
-        self.assertEqual(client['tx_kb'], 0)              
-        self.assertNotIn('rx_kb', client)                 
+        self.assertEqual(client['tx_kb'], 0)
+        self.assertNotIn('rx_kb', client)
         self.assertEqual(client['negotiated_rate'], 866.7)
         self.assertEqual(client['up_rate'], 3.5)
         self.assertNotIn('down_rate', client)
