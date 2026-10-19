@@ -4,6 +4,12 @@
 /captures/
 /backups/
 /logs/
+/artifacts/
+/diagnostics/
+/.playwright-mcp/
+/mongo-data/
+/bridge-data/
+/webcol-data/
 
 # Configuración y credenciales locales; conservar la plantilla pública.
 .env
@@ -35,6 +41,7 @@ dist/
 *.har
 *.pcap
 *.pcapng
+gitleaks*.json
 
 # Archivos del sistema y temporales del editor.
 .DS_Store
@@ -43,4 +50,3 @@ dist/
 *.swp
 *.swo
 *~
-
