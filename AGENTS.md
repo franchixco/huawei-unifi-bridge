@@ -22,6 +22,9 @@ library or existing components are sufficient.
 - `huawei_bridge/control.py`: allowlisted translation and ACS task confirmation.
 - `huawei_bridge/__main__.py`: ACS collection, worker, HTTP API and dashboard.
 - `huawei_bridge/static/`: dashboard without a framework or additional build step.
+- `tools/ucg_metrics_probe.py`: read-only CLI probing controller-native AP
+  metrics (`stat/device` system stats and `/v2` recent series); GET-only, no
+  writes, credentials from a separate file.
 - `tests/`: `unittest` tests with synthetic fixtures and local HTTP peers.
 - `compose.yml`, `Dockerfile*`: GenieACS/MongoDB/bridge lab stack.
 
@@ -36,9 +39,12 @@ make stop
 ```
 
 `make up` rebuilds and starts services without replacing `.env` or deleting
-volumes. `make stop` stops services without deleting data. The dashboard is at
-`http://127.0.0.1:8090`, GenieACS at `http://127.0.0.1:3000`, and collector health
-at `/health`. The first build requires image and package downloads.
+volumes. `make stop` stops services without deleting data. Under Compose the
+bridge dashboard is at `http://127.0.0.1:8091` (container `8090`), the `webcol`
+telemetry/admin sidecar at `http://127.0.0.1:7560`, GenieACS UI at
+`http://127.0.0.1:3002`, and bridge health at `/health`. Running the bridge
+directly keeps its own `127.0.0.1:8090` default. The first build requires image
+and package downloads.
 
 Run tests with Python 3.11+ and `requirements.txt` installed, preferably in an
 activated `.venv`:
@@ -77,18 +83,25 @@ execute `stop` merely to test it against the active lab.
   of the BE3 `WUKUN-BE32`. A 160 MHz capability is not the active channel width.
 - Do not infer missing generation, speeds, traffic, RSSI or topology. Exclude
   stale observations from reporting according to the collector's rules.
-- Huawei exposes per-client `phyMode` through its authenticated web API, but
-  this source is not part of automatic collection. Do not claim UniFi already
-  receives it or copy browser cookies as an improvised implementation.
-- EasyMesh is not implemented. The primary router was observed to expose
-  topology through `/api/device/l2topo`, but that does not guarantee complete
-  agent metrics or client lists. Do not add it without a new request.
+- The `webcol` service collects per-client `phyMode` automatically over
+  Huawei's authenticated web API, using credentials kept only in the protected
+  `.env`; the bridge merges it into a neutral, `reported-unverified` `radio_proto`
+  when the evidence is fresh. Never export browser cookies or session material,
+  and never present `reported-unverified` data as controller-confirmed.
+- EasyMesh is not implemented. The primary router exposes topology through
+  `/api/device/l2topo`; its agent client lists can be empty, so it is reported as
+  support metadata only, never as complete agent metrics.
 
 ## Writes and security
 
-- Translate only SSID, fixed/automatic channel, enable/disable and WMM. Preserve
-  the allowlist, unambiguous radio binding, channel validation and writable-field
-  checks.
+- Native UniFi translation covers SSID, fixed/automatic channel, enable/disable
+  and WMM for multiple VAPs per radio through stable, trusted bindings. Preserve
+  the allowlist, unambiguous/trusted binding (fail closed on untrusted or
+  ambiguous inventory), channel validation and writable-field checks.
+- The admin sidecar (see OPERATIONS.md) is a separate, loopback-only, token-gated
+  path: empty token refuses every request, writes and unverified/destructive
+  actions each need their own opt-in, and secrets are never read back. Keep it
+  distinct from the native inform path.
 - The first configuration establishes a baseline without writes. Never impose
   UniFi defaults on the Huawei during startup or readoption.
 - An ACS task ID does not confirm a write. Require matching readback values

@@ -61,10 +61,9 @@ the declaration required for each new contribution.
 ## Development and verification
 
 ```sh
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r requirements.txt
-make test
+uv venv .venv
+uv pip install --python .venv/bin/python -r requirements.txt
+uv run --no-project --python .venv/bin/python make test
 ```
 
 - Add regression coverage for bug fixes and tests for non-trivial new behavior.
