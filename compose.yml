@@ -18,7 +18,9 @@ services:
       GENIEACS_UI_WORKER_PROCESSES: 1
       GENIEACS_UI_JWT_SECRET: test-only-change-before-production
     ports:
-      - "7547:7547"
+      # TR-069 is unauthenticated on the LAN: bind only to the selected host
+      # address instead of every interface. Change the IP when redeploying.
+      - "${CWMP_BIND_IP:-127.0.0.1}:7547:7547"
 
   nbi:
     build: .
@@ -38,7 +40,7 @@ services:
       - mongo
     environment: *genieacs-environment
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3002:3000"
 
   bridge:
     build:
@@ -49,14 +51,16 @@ services:
       - nbi
     environment:
       GENIEACS_URL: http://nbi:7557
-      PUBLIC_URL: http://127.0.0.1:8090
+      PUBLIC_URL: http://127.0.0.1:8091
       LISTEN_HOST: 0.0.0.0
       STATE_DIR: /data
       UNIFI_INFORM_URL: ${UNIFI_INFORM_URL:-}
       UNIFI_WLAN_MAP: ${UNIFI_WLAN_MAP:-}
       HUAWEI_CONTROL_IP: ${HUAWEI_CONTROL_IP:-}
+      # Independent pin authority for web-only sources: origin=serial, no password.
+      WEB_ONLY_SERIALS: "${WEB_ONLY_SERIALS:-}"
     ports:
-      - "127.0.0.1:8090:8090"
+      - "127.0.0.1:8091:8090"
     volumes:
       - bridge-data:/data
     read_only: true
@@ -72,6 +76,55 @@ services:
       timeout: 5s
       retries: 3
 
+  webcol:
+    build: ./webcol
+    container_name: tr069-unifi-bridge-webcol
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    environment:
+      BROWSERLESS_URL: "${BROWSERLESS_URL}"
+      WEBROUTERS: "${WEBROUTERS}"
+      # Read-only WEB-ONLY sources (no TR-069). Empty disables the feature.
+      WEB_ONLY_ROUTERS: "${WEB_ONLY_ROUTERS:-}"
+      WEB_ONLY_SERIALS: "${WEB_ONLY_SERIALS:-}"
+      INTERVAL_SECONDS: "60"
+      PORT: "7560"
+      # Direct API transport is primary. Optional browserless fallback stays
+      # available; set WEBENRICH_DIRECT_ONLY=1 to disable it entirely.
+      WEBENRICH_DIRECT_ONLY: "${WEBENRICH_DIRECT_ONLY:-0}"
+      # Explicit LAN opt-in: the CPE UI uses a self-signed certificate. The
+      # default keeps TLS verification on for every other deployment.
+      WEBENRICH_VERIFY_TLS: "${WEBENRICH_VERIFY_TLS:-true}"
+      WEBENRICH_DIRECT_TOTAL: "${WEBENRICH_DIRECT_TOTAL:-25}"
+      WEBENRICH_DIRECT_BUDGET: "${WEBENRICH_DIRECT_BUDGET:-30}"
+      WEBENRICH_HTTP_TIMEOUT: "${WEBENRICH_HTTP_TIMEOUT:-8}"
+      WEBCOL_STATE_DIR: "/data"
+      WEBCOL_LISTEN_HOST: "0.0.0.0"
+      WEBCOL_ALLOWED_HOSTS: "${WEBCOL_ALLOWED_HOSTS:-webcol,127.0.0.1,localhost}"
+      WEBCOL_ADMIN_TIMEOUT: "${WEBCOL_ADMIN_TIMEOUT:-40}"
+      # Admin control sidecar (loopback only, distinct from the native UniFi
+      # inform path). Empty token refuses every admin write; writes stay off.
+      HW_OPERATIONS_TOKEN: "${HW_OPERATIONS_TOKEN:-}"
+      HW_OPERATIONS_WRITES: "${HW_OPERATIONS_WRITES:-0}"
+      HW_OPERATIONS_ALLOW: "${HW_OPERATIONS_ALLOW:-}"
+      HW_OPERATIONS_UNVERIFIED_WRITES: "${HW_OPERATIONS_UNVERIFIED_WRITES:-0}"
+      HW_OPERATIONS_REBOOT_APPROVED: "${HW_OPERATIONS_REBOOT_APPROVED:-0}"
+      HW_OPERATIONS_RESOLVE: "${HW_OPERATIONS_RESOLVE:-0}"
+      HW_OPERATIONS_STATE: "/data/operations_state.json"
+      HW_ROUTER_SERIALS: "${HW_ROUTER_SERIALS:-}"
+    volumes: ["webcol-data:/data"]
+    ports: ["127.0.0.1:7560:7560"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7560/health', timeout=3)"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+
 volumes:
   mongo-data:
   bridge-data:
+  webcol-data:
