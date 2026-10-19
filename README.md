@@ -1,8 +1,17 @@
-# Huawei TR-069 to UniFi Bridge
+# Huawei UniFi Bridge — API + TR-069 fork
+
+This is the maintained `huawei-api-bridge` variant of
+[RodrigoChang/TR-069-Unifi-Simulator](https://github.com/RodrigoChang/TR-069-Unifi-Simulator).
+It preserves the original project's history, MIT license and acknowledgements.
+The fork adds a direct Huawei API collector, explicitly pinned web-only devices,
+durable radio/VAP identities, association conflict handling and guarded
+administrative operations. See [FORK_NOTES.md](FORK_NOTES.md) for the branch
+relationship, validation evidence, AI disclosure and limitations.
 
 An experimental, self-hosted bridge that collects Huawei router telemetry through
-GenieACS, displays it in a local dashboard, and reports observed radios and Wi-Fi
-clients to UniFi Network as a virtual access point.
+GenieACS and/or the authenticated Huawei web API, displays it in a local dashboard,
+and reports observed radios and Wi-Fi clients to UniFi Network as a virtual access
+point. Web-only routers do not need to impersonate or register as ACS devices.
 
 This independent project is based on the virtual AP simulation approach of
 [MartinDejmal/unifi-simulator](https://github.com/MartinDejmal/unifi-simulator).
@@ -20,6 +29,11 @@ Special thanks to **MartinDejmal and the unifi-simulator contributors** for
 project that provided the foundation for this bridge's UniFi AP simulation work.
 Their work on reporting non-UniFi hardware to UniFi made this Huawei adaptation
 possible.
+
+This fork also acknowledges **Rodrigo Chang** for the original Huawei TR-069
+bridge and **Vladimir Makeev** for the Huawei API client on which the adapted
+authentication and operation contracts are based. Their copyright and license
+notices are preserved in `LICENSE` and `THIRD_PARTY_LICENSES.md`.
 
 The TNBU codec in `huawei_bridge/protocol.py` is adapted from upstream revision
 [`adef72ae011837b07f7406a2932bc153febf84d9`](https://github.com/MartinDejmal/unifi-simulator/tree/adef72ae011837b07f7406a2932bc153febf84d9).
@@ -56,14 +70,19 @@ certification by an AI provider, Huawei, Ubiquiti or the upstream maintainers.
 - Explicit mapping from Huawei SSIDs to existing UniFi WLAN IDs.
 - Optional SSID, channel, enable/disable and WMM changes through GenieACS.
 
-Reference hardware: Huawei BE3 (`WUKUN-BE32`), firmware
-`4.2.0.53(SP1C1555)`, tested with UniFi Network `10.6.106`. Other hardware and
-versions require their own validation. The dashboard currently uses Spanish labels.
+Upstream reference hardware is Huawei BE3 (`WUKUN-BE32`), firmware
+`4.2.0.53(SP1C1555)`, with UniFi Network `10.6.106` as reported by upstream.
+This fork has additionally been exercised with Network `11.0.89`, BE3 telemetry
+and adopted virtual identities, and AX3 (`WS7200-30`) API-only collection and
+virtual-device discovery. These observations do not certify other firmware,
+physical write operations or full UniFi equivalence. The dashboard currently uses
+Spanish labels.
 
 ```text
-Huawei CPE -- TR-069/CWMP --> GenieACS -- NBI --> Bridge -- inform --> UniFi
-                                                 |
-                                           Local dashboard
+Huawei CPE -- TR-069/CWMP --> GenieACS -- NBI --+
+                                             +--> Bridge -- inform --> UniFi
+Huawei web API ---------> webcol --------------+       |
+                                                Local dashboard
 ```
 
 The default mode only reads telemetry. Optional provisioning follows the reverse
@@ -74,8 +93,11 @@ readback confirmation.
 
 - Docker Engine/Desktop running, with Docker Compose v2.
 - `make` for convenience commands, or use Docker Compose directly.
-- A Huawei router with configurable TR-069 ACS settings and TR-098 WLAN data.
-- Connectivity from the router to the Docker host's CWMP listener.
+- Either a Huawei router with configurable TR-069 and TR-098 WLAN data, or an
+  explicitly configured API-only router with its own pinned serial.
+- For TR-069 devices: connectivity to the Docker host's CWMP listener. For
+  API-only devices: a persistent management route from the Docker host to the
+  router. The collector does not configure host routes or IP aliases.
 - For UniFi reporting: a reachable Network inform endpoint and an existing WLAN.
 - Internet access for the initial image and dependency downloads.
 
@@ -98,23 +120,63 @@ docker compose up -d --build
 ```
 
 No `.env` is required for local monitoring. Without it, UniFi reporting and
-Huawei writes are disabled. Startup never replaces an existing `.env` or deletes
-data volumes.
+both provisioning write paths are disabled by default. Startup never replaces an
+existing `.env` or deletes data volumes.
 
-| Service | Local address / binding |
+| Service | Docker host address (application default) |
 | --- | --- |
-| Dashboard | <http://127.0.0.1:8090> |
-| Normalized snapshot | <http://127.0.0.1:8090/api/snapshot> |
-| Collector health | <http://127.0.0.1:8090/health> |
-| GenieACS UI | <http://127.0.0.1:3000> |
+| Bridge dashboard / snapshot | <http://127.0.0.1:8091> (`8090` inside the container) |
+| Inventory reconciliation | <http://127.0.0.1:8091/api/inventory> |
+| Bridge health | <http://127.0.0.1:8091/health> |
+| Web collection + admin sidecar | <http://127.0.0.1:7560> (`/health`, `/inventory`, `/capabilities`, `/operations`) |
+| GenieACS UI | <http://127.0.0.1:3002> (container `3000`) |
 | GenieACS NBI | `127.0.0.1:7557` |
-| CWMP listener | TCP `7547`, published on the Docker host's interfaces |
+| CWMP listener | TCP `7547`, bound to the single LAN address configured in `compose.yml` (owner-set `CWMP_BIND_IP`, loopback by default in examples) |
+
+Running the bridge directly (outside Docker) keeps its own defaults:
+`127.0.0.1:8090` with `STATE_DIR=.state/`.
+
+### Control paths and phase status
+
+There are two independent, separately gated write paths; a default install
+writes nothing on either:
+
+- **Native UniFi provisioning** (`HUAWEI_CONTROL_IP`): the bridge translates
+  allowlisted `system_cfg` fields (SSID, fixed/automatic channel, enable, WMM)
+  for multiple bound VAPs, and requires an unambiguous, trusted binding. With
+  the variable empty it never writes.
+- **Admin operations sidecar** (`HW_OPERATIONS_TOKEN` + `HW_OPERATIONS_WRITES`):
+  loopback-only HTTP endpoints in the `webcol` service for 802.11r, TWT, MAC
+  filtering, guest network and reboot plans. An empty token refuses every admin
+  request; each destructive or unverified action has its own opt-in flag.
+
+Read-only capability/plan status is exposed without enabling writes. Deployment
+status: the reviewed bridge + webcol source (the full offline test suite) is deployed with
+both write paths explicitly OFF and observed live:
+
+- `HUAWEI_CONTROL_IP` empty and `HW_OPERATIONS_WRITES=0`; the admin write endpoint
+  returns `403 writes_disabled` before any CPE configuration POST, and an
+  unauthenticated admin request returns `401`. The command token lives only in the
+  protected `.env` (mode 600) and is read manually by the owner, never from chat
+  or docs.
+- Direct API collection is primary on both CPEs (2 cycles each, browserless 0,
+  failures 0) and `/inventory` reports both routers fresh with trusted identity.
+- Controller-side projections are unchanged after deployment: both virtual APs
+  stay `state 1`, the same `cfgversion` and VAP BSSIDs, and the CPE WLAN settings
+  (SSID/channel/enable/WMM) are untouched — only login/logout were issued, never
+  a configuration write.
+
+Endpoint kinds, precisely: the native UniFi path implements an SSID/channel/WMM
+planner but is not enabled; the extra Huawei admin operations (`wifi.80211r`,
+`wifi.twt`, MAC filter, guest network, reboot) are **not** native UniFi buttons.
+Reported client rates carry an unverified unit: they are shown as source values
+only, never converted into directional TX/RX.
 
 Allow a few seconds for startup, then check:
 
 ```sh
 docker compose ps
-curl --fail http://127.0.0.1:8090/health
+curl --fail http://127.0.0.1:8091/health
 ```
 
 Health confirms recent ACS collection, not AP adoption or client visibility.
@@ -139,8 +201,10 @@ appears in GenieACS and the dashboard.
 **Lab security:** the supplied GenieACS configuration does not enforce the ACS
 credentials sent by the CPE. Entering them in the router does not enable
 server-side authentication. CWMP uses HTTP, and Compose includes a test UI JWT
-secret. Restrict TCP `7547` to the trusted LAN. Do not expose this stack directly
-to the Internet or treat these defaults as production-hardened.
+secret. The CWMP port is published only on the single LAN address configured in
+`compose.yml`; within that LAN the endpoint remains unauthenticated, so add a
+firewall allowlist for the CPEs as defense in depth. Do not expose this stack
+directly to the Internet or treat these defaults as production-hardened.
 
 ## Enable UniFi reporting
 
@@ -161,7 +225,8 @@ HUAWEI_CONTROL_IP=
 The example ID is not usable for your controller. The hostname must resolve from
 the bridge container, and TCP `8080` must be reachable; see Ubiquiti's
 [Layer 3 adoption guidance](https://help.ui.com/hc/en-us/articles/204909754-Remote-Adoption-Layer-3).
-Leave `HUAWEI_CONTROL_IP` empty to keep writes disabled. Apply `.env` edits by
+Leave `HUAWEI_CONTROL_IP` empty to keep the native UniFi path read-only (the
+admin sidecar has its own `HW_OPERATIONS_WRITES` switch). Apply `.env` edits by
 recreating the bridge:
 
 ```sh
@@ -263,6 +328,123 @@ exchange succeeded. Neither alone proves the AP is Online or its clients are
 visible. Verify those results in UniFi. SSH adoption and UDP discovery are not
 implemented.
 
+### Inventory reconciliation (read-only)
+
+The bridge reconciles the Huawei web WLAN inventory (collected by `webcol` over
+the direct API) with TR-098 radios. A router's web evidence is applied only when
+its management IP **and** hardware serial match the ACS identity, so a DHCP
+change is never attributed to the wrong device. Only fresh, explicitly enabled
+profiles are published; a profile without a TR-098 radio is retained as
+`observed_unmanaged` metadata with no channel. `radio_table` keeps one
+deterministic entry per physical band and flags conflicting observed channels as
+uncertain instead of guessing; a configured `channel 0` (automatic) is never
+sent as a physical channel. Stable virtual slots persist under `bridge-data`
+(`inventory/vap_map_v2.json`) and keep the same virtual BSSID across SSID
+renames and row reorders. Real model, firmware, serial and uptime appear as
+read-only `device_truth`, while the inform keeps the virtual U7PRO identity and
+publishes uptime only from fresh, trusted router evidence. The bridge session
+uptime remains local diagnostic metadata. Reported counters carry their source unit and reset
+detection; no throughput is derived. `/api/inventory` exposes this view and
+never writes to a router.
+
+### Read-only WEB-ONLY CPE (no TR-069)
+
+Some Huawei CPEs (for example the AX3/WS7200 class) expose no usable TR-069
+endpoint and never register with GenieACS. They can still be reported as an extra
+virtual AP over their authenticated web API, without impersonating an ACS device:
+
+- `WEB_ONLY_ROUTERS` lists `https://<router-ip>=<password>` pairs (protected
+  `.env` only, empty by default; each URL must be a literal private/loopback IP
+  with no userinfo and is never logged). `WEB_ONLY_SERIALS` pins
+  `origin=serial` (an explicit canonical origin, no bare/ambiguous serial); webcol
+  re-checks it on every poll and the bridge enforces its own independent
+  origin-to-serial map (no password ever reaches the bridge). A non-direct
+  transport or a session without the verified server signature/public key is
+  refused, and only the WS7100/WS7200 model family is admitted. A CPE whose fresh
+  serial does not match is never published.
+- The provider consumes the webcol `/webonly` records and reuses the same
+  bounded direct client and parsers. It is collected independently of ACS: a
+  zero-device or all-offline ACS state never hides a healthy AX3, and losing the
+  AX3 never changes the BE3 identity. Clients without a PHY mode are kept (the
+  AX3 reports none); a native `LAN*`/`eth*` interface is treated as wired even
+  when a stale wireless label is present, and `WlanActive=false` alone does not
+  drop a row.
+- Identity is serial-derived and stable: a private registry under `bridge-data`
+  (`inventory/webonly_v1.json`, mode 0600) maps a hash of the pinned serial to an
+  explicit source id and virtual MAC. The registry is strictly validated
+  (bounded size, scheme/sources shape, id/MAC/hash consistency, no duplicate
+  MAC/id); any malformed entry fails the whole web-only source closed and the
+  file is never rewritten. **Identity and slots are persisted before the first
+  AP is published**: if the background save has not completed (or fails, e.g.
+  ENOSPC), the AX3 stays suppressed until durable state exists, while the BE3
+  path is never blocked. A missing file is the only clean first boot. If a CPE
+  with the same serial appears in ACS (even while the web source itself is
+  offline, because the registry key is persistent), the new ACS AP and its
+  clients are quarantined before the wire and before any ACS refresh/control; no
+  new pending identity derived from that ACS unit is emitted, and a manual
+  reconciliation is required (no automatic migration or re-adoption).
+- Radios are one VAP per actual profile `native_id` (not per usage label), with
+  the physical 2.4/5 GHz table deduplicated as before. Virtual slots are reserved
+  historically by `native_id`, so a reorder, SSID rename, usage-flag change, a
+  profile disappearing and later returning keep the same slot and wire BSSID.
+  A profile without a `native_id`, or with a duplicated one, is rejected rather
+  than guessed. Clients attach by exact native interface id, otherwise only by
+  an unambiguous band plus the WlanGuideBasic `primary` role; a guest client is
+  never mapped onto a primary-only band, and unbound clients are counted
+  separately from the native client count. Only `WlanGuideBasic` profiles become
+  primary VAPs; guest SSIDs are never inferred from names.
+- The virtual AP keeps the U7PRO profile but advertises only the observed
+  radios: no 6 GHz, no `be`, no fabricated 160 MHz. No effective channel is
+  claimed (the read-only `wlanradio` getter does not expose current channel
+  fields), so a configured channel—including automatic `0` and a configured
+  `36`—is never sent as the effective one. CPU/memory gauges are published only
+  when the stats timestamp is fresh (bounded TTL) and the values are finite
+  percentages; an absent/old/bogus gauge is omitted, never freshened by the
+  record timestamp.
+- It is never controllable: `device_lookup` and any CWMP plan/ACS task are
+  skipped for web-only (`cwmp-unsupported-web-source` is reported as an explicit
+  reason, not an error), and native writes stay off even if its management IP is
+  added to `HUAWEI_CONTROL_IP`.
+
+This is an **external, temporary network dependency**: the AX3 is reachable only
+while a LAN management route/alias to its `192.168.3.1` address exists. That route
+does not survive a host reboot until the owner persists it (or the CPE's LAN
+management IP is changed), so the web-only AP is not reported as permanent. The
+provider never adds a privileged service, proxy MAC or network-admin container;
+it fails only the AX3 when the route is lost and leaves everything else intact.
+
+### Station association, persistence and poll isolation
+
+- A single global arbiter runs before the UniFi wire for every provider. Fresh
+  clients are grouped by MAC and the strongest evidence wins: `TR-069
+  AssociatedDevice` with `AuthenticationState=true` is `strong-authenticated`
+  (source confidence, not a hardware crypto claim); a native associated MAC
+  without that flag is `reported`; `HostInfo` rows are `weak` (ARP/IP presence,
+  not association proof). A tie inside the winning tier is ambiguous and every
+  candidate for that MAC is suppressed, never resolved by poll timestamp, so a
+  duplicate or roaming client cannot flap between the ACS CPEs and the web-only
+  AP. Stale observations are excluded from arbitration (age describes the
+  source, not a roam decision). An explicit negative `AuthenticationState`
+  (false/0/`'false'`/`'0'`) excludes the row entirely rather than treating it as
+  a weak candidate. `client_count` is the publishable count; the
+  reported count and unbound web clients are kept separately.
+- Registry persistence runs on one bounded background writer, never in the
+  snapshot/inform thread: the state is copied under a quick lock, at most one
+  pending payload per namespace is queued, and a generation is acknowledged only
+  after it is durably written. A stuck or failed save (for example ENOSPC) backs
+  off without starving the other registry and suppresses the AX3 rather than
+  blocking the BE3. Identity and VAP slots are therefore durable before a new
+  web-only AP is ever published. Shutdown is bounded and best-effort: a pending
+  write may be dropped, which is safe because an AP is never published before its
+  identity is durable.
+- Diagnostics use hashed, non-plaintext client and identity identifiers (MAC and
+  serial are never logged in clear). The bootstrap identity file
+  (`/root/ax3-api-bootstrap-*/identity.json`, mode 0600) is private operator data
+  and must never be copied into public fixtures or documentation.
+- The `webcol` cycle dispatches normal CPEs and web-only CPEs as separate tasks
+  under a shared semaphore of two, one poll per host: a slow or failing web-only
+  poll overlaps instead of delaying the normal CPE refresh.
+
 ## Optional configuration from UniFi
 
 To enable writes for one directly registered CPE, set its management/callback IP
@@ -280,9 +462,11 @@ HUAWEI_CONTROL_IP=<HUAWEI_MANAGEMENT_IP>
 | `wireless.N.wmm` | Bound WLAN's `WMMEnable` |
 
 Radios bind through `phyname`/`parent` and observed TR-098 paths, not row position.
-Only one virtual WLAN per radio is supported for provisioning; ambiguous mappings
-are rejected. Channels must be advertised in `PossibleChannels`, and changed
-parameters must exist and be writable.
+Multiple VAPs per physical radio are supported through stable, persisted
+bindings (keyed by the web `native_id`/TR-098 path, never by SSID or row order),
+with legacy single-binding records migrated automatically. An unknown, ambiguous
+or untrusted binding is rejected rather than guessed; channels must be advertised
+in `PossibleChannels`, and changed parameters must exist and be writable.
 
 The first configuration establishes a baseline **without writing controller
 defaults to the router**. Later supported changes generate `setParameterValues`
@@ -320,18 +504,66 @@ No traffic counters, client speeds, noise, transmit power or connection duration
 are fabricated. Band mapping targets the tested 2.4/5 GHz device; 6 GHz hardware
 requires additional handling. Controller defaults are not Huawei measurements.
 
+### Native CPU, memory and uptime
+
+When the web `direct` transport succeeds, the bridge reads the router's own
+`GET /api/system/processstatus` once per cycle and uses **only** the first row
+(`Name: "Total"`) as the router-wide CPU/memory gauge. This matches the router's
+bundled UI, which renders `processstatus[0].CpuUsage`/`MemUsage` as percentages
+when the `isSupportShowCpuMemoryStatus` capability is set; no per-process row is
+ever summed, and no per-process name is published. Values are exported to the
+UniFi inform as the native `system-stats` object (`cpu`, `mem` as percentage
+strings) plus `uptime` in seconds, and only while the CPE is trusted (management
+IP **and** serial matched) and the observation is fresh. Uptime comes from the
+router's **web** `GET /api/system/deviceinfo` `UpTime` field — not from the
+TR-098 `InternetGatewayDevice.DeviceInfo.UpTime` parameter, which this firmware
+does not expose here. The bridge never publishes its own process uptime as
+device uptime, and when no hardware reading exists the field is omitted.
+Absolute memory bytes (`sys_stats.mem_total`/`mem_used`), load averages,
+temperature and air/retry/satisfaction metrics are never invented.
+
+The deployed Network 11.0.89 controller has accepted `system-stats.cpu`,
+`system-stats.mem`, and router uptime in `stat/device`. Its native
+`systemBySiteByDevice` history now contains `avgCpuUtilizationPct` and
+`avgMemoryUtilizationPct` samples. A read-only browser check confirmed Memory
+Usage and router Uptime in both AP detail panels. The tested U7 Pro detail view
+does not display a CPU gauge, even though CPU is available in the controller
+API and history. This is not a claim that every UniFi panel is supported.
+
+The native `wirelessTrafficBySiteByDevice` query still returns no byte values
+for the selected APs. Air Stats displays zero/default values, not independently
+measured zero traffic or zero retries. Retries, airtime, satisfaction and the
+unverified shared interface byte counters remain unsupported by the observed
+sources and are never invented or exported to the device/VAP wire.
+
+Per-interface TR-098 counters (`TotalBytesSent`/`Received`,
+`TotalPacketsSent`/`Received`, `Stats.Errors*`/`Discards*`) are recorded as
+**diagnostic observations only**. On the tested firmware the two
+`WLANConfiguration` interfaces report near-identical totals, so their scope is
+marked `shared_or_mirrored_unverified` and they are never summed, deduplicated
+or written to the device/VAP wire. Each observation keeps its own
+`_timestamp`/`_type` leaf metadata and the counter state is persisted to
+`bridge-data` under `metrics/counters_v1.json`; replay/reordered snapshots never
+advance state or repeat a delta, a wider-than-threshold gap invalidates the
+interval, and a decrease is treated as a reset (never a guessed wrap). Metrics
+no observed endpoint provides (retries, airtime, satisfaction) are reported as
+`unavailable_in_observed_sources`, and per-station `HostInfo` bytes are labelled
+`client_per_station_traffic_unusable`. The snapshot exposes a per-AP
+`metric_capabilities` table with the exact source, unit and reason for every
+proven, blocked or unavailable metric.
+
 ### Wi-Fi generation per client
 
-The tested BE3 exposes MAC, IP and RSSI through TR-069 `AssociatedDevice`, but
-not each client's Wi-Fi generation. `Standard` describes the radio's capabilities,
-not a client's negotiated mode. **Per-client Wi-Fi generation is not currently
-reported reliably to UniFi.**
+The tested BE3 exposes MAC, IP and RSSI through TR-069 `AssociatedDevice`, and
+`Standard` describes the radio's capabilities rather than a client's mode.
 
-Huawei's authenticated `GET /api/system/HostInfo` was observed to return
-per-client `phyMode` values such as `802.11n`, `802.11ac`, `802.11ax` and
-`802.11be`, with some values empty. Integrating it requires an authenticated web
-collector and session-expiry handling. The current project does not export
-browser cookies or store web administrator credentials.
+The `webcol` service now collects Huawei's authenticated `GET /api/system/HostInfo`
+automatically over the direct web API using credentials stored only in the
+protected `.env`, and the bridge merges per-client `phyMode` into a neutral
+`radio_proto` when the evidence is fresh. It is advertised as
+`reported-unverified`: it is what the router reports, not a controller-confirmed
+mode. Clients without fresh web evidence simply omit it, and no browser cookie
+or web session is exported.
 
 ### EasyMesh satellites
 
@@ -351,7 +583,9 @@ docker compose stop bridge             # Stop the bridge; leave GenieACS running
 ```
 
 `mongo-data` holds GenieACS data. `bridge-data` holds private adoption keys,
-stable identities, WLAN bindings and provisioning state. **Do not delete these
+stable identities, WLAN bindings, provisioning state and the bounded interface
+counter state (`metrics/counters_v1.json`, written atomically and fail-open so a
+metric failure never affects the inform). **Do not delete these
 volumes or run `docker compose down -v` as an update step.** Backups contain
 sensitive data and must be stored securely.
 
@@ -392,18 +626,45 @@ a second emitter against the same virtual AP while the Docker bridge is active.
 Tests use synthetic fixtures/local HTTP peers, not the real router; HTTP tests
 require permission to bind loopback sockets.
 
-The reference implementation has 20 automated tests covering normalization,
+The test suite covers normalization,
 encryption/adoption, WLAN mapping, HTTP boundaries, translation, persistence,
 readback, faults and uncertain outcomes. Hardware validation included adoption,
 restart persistence, client visibility, 160 MHz capability display and an
 idempotent WMM write followed by fresh ACS readback. Disruptive SSID/channel
 changes have not been validated against the physical router.
 
+### Controller-native metrics probe
+
+`tools/ucg_metrics_probe.py` is a read-only, credential-file-driven CLI used to
+verify what the UCG/Network controller reports natively for the APs (the
+`stat/device` `system-stats`/`sys_stats` blocks and the modern
+`/v2/api/stats/recent/series` schemas). It makes GET requests plus one login,
+never writes, and its output distinguishes a genuinely empty series (controller
+history/analytics disabled for that range) from a 403 (read-only role or a
+missing CSRF token, never treated as success). It reports only current
+observations — no backfill or synthetic history is fabricated — and the recent
+series may legitimately include buckets from the recent past. Example:
+
+```sh
+python3 tools/ucg_metrics_probe.py \
+  --base https://<controller-ip> --credentials <ro-creds.json> \
+  --device-mac <ap-mac> --period HOUR --json
+```
+
+Credentials stay in a separate `0600` JSON file and are never embedded in the
+tool, output or repository.
+
 | Variable | Purpose / default |
 | --- | --- |
 | `UNIFI_INFORM_URL` | Empty disables the emitter. |
 | `UNIFI_WLAN_MAP` | JSON mapping of exact SSIDs to real WLAN IDs; empty means no mapped WLANs. |
-| `HUAWEI_CONTROL_IP` | Empty disables writes; otherwise restricts provisioning to one management IP. |
+| `HUAWEI_CONTROL_IP` | Empty disables native UniFi provisioning; otherwise restricts it to listed management IPs (comma separated). |
+| `WEBROUTERS` | `https://<ip>=<password>` telemetry sources for the `webcol` direct API collector. |
+| `HW_OPERATIONS_TOKEN` | Empty refuses every admin sidecar request. |
+| `HW_OPERATIONS_WRITES` / `HW_OPERATIONS_ALLOW` | Master write switch (default `0`) and comma-separated write allowlist. |
+| `HW_OPERATIONS_UNVERIFIED_WRITES` / `HW_OPERATIONS_REBOOT_APPROVED` / `HW_OPERATIONS_RESOLVE` | Per-risk opt-ins (default `0`). |
+| `HW_OPERATIONS_STATE` | Redacted sidecar ledger, e.g. `/data/operations_state.json`. |
+| `HW_ROUTER_SERIALS` | Optional `host=serial` expectations; the fresh deviceinfo serial must match before a session is trusted. |
 | `GENIEACS_URL` | NBI URL; local default `http://127.0.0.1:7557`. |
 | `STATE_DIR` | Local default `.state/`; Docker uses `/data`. |
 | `PUBLIC_URL` | Default `http://127.0.0.1:8090`; participates in request validation. |
