@@ -624,12 +624,13 @@ def ap_with_counters():
 class SystemStatsPayloadTests(unittest.TestCase):
     def ap_with_stats(self, **stats):
         ap = ap_with_counters()
-        ap['device_stats'] = stats
+        ap['device_stats'] = dict(stats, uptime_observed_at=NOW, uptime_ttl_seconds=600)
         return ap
 
     def build(self, ap):
         snapshot = {'clients': [], 'aps': [ap]}
-        return payload(ap, snapshot, {}, 'http://unifi.test/inform', 99)
+        with unittest.mock.patch('huawei_bridge.unifi.time.time', return_value=NOW):
+            return payload(ap, snapshot, {}, 'http://unifi.test/inform', 99)
 
     def test_system_stats_carry_real_cpu_mem_and_uptime(self):
         body = self.build(self.ap_with_stats(cpu_percent=5, mem_percent=36, uptime_seconds=12345))

@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 from .protocol import BOOTSTRAP_KEY, MAX_PAYLOAD, ProtocolError, decode, encode
+from .uptime import project as project_uptime
 
 MODEL = 'U7PRO'
 VERSION = '8.7.11.19419'
@@ -105,6 +106,7 @@ def _percent_text(value):
 def payload(ap: dict[str, Any], snapshot: dict[str, Any], state: dict[str, Any],
             url, _session_uptime, wlan_map=None) -> dict[str, Any]:
     vm = ap['virtual_mac']
+    now = time.time()
     body: dict[str, Any] = {'model': MODEL,
             'model_display': ap.get('model_display') or 'Huawei BE3 bridge (virtual U7 Pro)',
             'version': VERSION, 'required_version': '8.0.28',
@@ -112,7 +114,7 @@ def payload(ap: dict[str, Any], snapshot: dict[str, Any], state: dict[str, Any],
             'hostname': ap.get('hostname') or 'Huawei-' + vm.replace(':', '')[-6:],
             'ip': ap['ip'] or '0.0.0.0', 'inform_url': url,
             'default': not state.get('authkey'), 'state': 2 if state.get('authkey') else 0,
-            'cfgversion': state.get('cfgversion', ''), 'time': int(time.time()),
+            'cfgversion': state.get('cfgversion', ''), 'time': int(now),
             'discovery_response': False, 'isolated': False, 'locating': False,
             'radio_table': [], 'radio_table_stats': [], 'vap_table': []}
     # CPU/memory/uptime are emitted only from trusted, fresh hardware evidence.
@@ -120,16 +122,13 @@ def payload(ap: dict[str, Any], snapshot: dict[str, Any], state: dict[str, Any],
     # no hardware source the wire fields are simply absent.
     device_stats = ap.get('device_stats') if isinstance(ap.get('device_stats'), dict) else None
     system_stats: dict[str, str] = {}
-    uptime_seconds = None
+    uptime_seconds = project_uptime(device_stats, now)['estimated_seconds']
     if device_stats:
         cpu, mem = device_stats.get('cpu_percent'), device_stats.get('mem_percent')
         if _is_number(cpu) and cpu >= 0:
             system_stats['cpu'] = _percent_text(cpu)
         if _is_number(mem) and mem >= 0:
             system_stats['mem'] = _percent_text(mem)
-        raw_uptime = device_stats.get('uptime_seconds')
-        if _is_number(raw_uptime) and raw_uptime >= 0:
-            uptime_seconds = int(raw_uptime)
     if uptime_seconds is not None:
         body['uptime'] = uptime_seconds
         system_stats['uptime'] = str(uptime_seconds)
@@ -339,6 +338,8 @@ class UniFi:
                                   'model': MODEL, 'experimental': True,
                                   # Bridge-local diagnostic only: never the wire uptime.
                                   'virtual_session_uptime': int(session_uptime),
+                                  'uptime': {**project_uptime(ap.get('device_stats'), time.time()),
+                                             'sent_seconds': data.get('uptime')},
                                   'device_stats': dict(ap['device_stats'])
                                   if isinstance(ap.get('device_stats'), dict) else None,
                                   'stations_sent': sum(len(v['sta_table']) for v in data['vap_table']),
