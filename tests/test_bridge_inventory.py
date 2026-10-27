@@ -40,6 +40,7 @@ def profile(band, ssid, native_id, usage='primary', enabled=True, channel=0):
 def web_router(profiles, ip='192.0.2.11', serial=SERIAL, fresh=True, updated_at=NOW,
                observed_at=NOW, model='WUKUN-BE32-40'):
     return {'router_ip': ip, 'fresh': fresh, 'updated_at': updated_at, 'observed_at': observed_at,
+            'device_observed_at': observed_at,
             'serial': serial,
             'device': {'serial_number': serial, 'model': model},
             'inventory': {'profiles': profiles}}
@@ -492,7 +493,8 @@ class SnapshotMetricWiringTests(unittest.TestCase):
             self.assertTrue(os.path.exists(state_path))
 
             from huawei_bridge.unifi import payload
-            body = payload(ap_view, snap, {}, 'http://unifi.test/inform', 3)
+            with unittest.mock.patch('huawei_bridge.unifi.time.time', return_value=NOW):
+                body = payload(ap_view, snap, {}, 'http://unifi.test/inform', 3)
             self.assertEqual(body['system-stats']['cpu'], '5')
             self.assertEqual(body['uptime'], 500000)
             self.assertNotIn('tx_bytes', json.dumps(body))

@@ -11,6 +11,8 @@ import json
 import os
 from typing import Any
 
+from .uptime import bounded_ttl as uptime_ttl, sample as uptime_sample
+
 SCHEMA_VERSION = 2
 BAND_ORDER = {'2.4g': 0, '5g': 1}
 DEFAULT_WEB_TTL = 600.0
@@ -99,13 +101,13 @@ def device_stats(web_router, device, now=None, ttl=DEFAULT_WEB_TTL):
     cpu = _numeric(stats.get('cpu_percent')) if fresh else None
     mem = _numeric(stats.get('mem_percent')) if fresh else None
     raw_device = device if isinstance(device, dict) else {}
-    uptime = _numeric(raw_device.get('uptime_seconds'))
-    uptime = int(uptime) if uptime is not None and uptime >= 0 else None
+    uptime = uptime_sample(raw_device, router.get('device_observed_at'), now,
+                           uptime_ttl(router.get('ttl_seconds', _bounded_ttl(ttl))))
     reason = None
     if cpu is None or mem is None:
         reason = router.get('stats_reason') if isinstance(router.get('stats_reason'), str) \
             else 'unavailable_in_observed_sources'
-    return {'cpu_percent': cpu, 'mem_percent': mem, 'uptime_seconds': uptime,
+    return {'cpu_percent': cpu, 'mem_percent': mem, **uptime,
             'observed_at': seen if (cpu is not None or mem is not None) else None,
             'source': 'huawei-web', 'unavailable_reason': reason}
 

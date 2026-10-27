@@ -24,6 +24,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .collector import virtual_mac
+from .uptime import bounded_ttl as uptime_ttl, sample as uptime_sample
 
 SCHEMA_VERSION = 1
 SOURCE_KIND = 'web-api-only'
@@ -326,13 +327,12 @@ def _stats(record, device, now):
         return value if value is not None and 0 <= value <= 100 else None
 
     cpu, mem = gauge('cpu_percent'), gauge('mem_percent')
-    uptime = device.get('uptime_seconds')
-    uptime = (int(uptime) if isinstance(uptime, int) and not isinstance(uptime, bool)
-              and 0 <= uptime <= MAX_UPTIME else None)
+    uptime = uptime_sample(device, record.get('device_observed_at'), now,
+                           uptime_ttl(record.get('ttl_seconds', DEFAULT_TTL), MAX_TTL))
     reason = record.get('stats_reason') if isinstance(record.get('stats_reason'), str) else None
     if (cpu is None or mem is None) and reason is None:
         reason = 'unavailable_in_observed_sources'
-    return {'cpu_percent': cpu, 'mem_percent': mem, 'uptime_seconds': uptime,
+    return {'cpu_percent': cpu, 'mem_percent': mem, **uptime,
             'observed_at': stats_seen if (cpu is not None or mem is not None) else None,
             'source': 'huawei-web', 'unavailable_reason': reason}
 

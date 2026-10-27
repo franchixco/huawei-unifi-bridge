@@ -60,6 +60,7 @@ def record(**overrides):
                 profile('5g', 'ExampleWifi', 'InternetGatewayDevice.X_Config.Wifi.Radio.2.Ssid.1',
                         'a/n/ac/ax', channel=36)]},
         'stats': {'cpu_percent': 0, 'mem_percent': 22}, 'stats_reason': None,
+        'device_observed_at': NOW,
         'stats_observed_at': NOW, 'transport': 'direct', 'observed_at': NOW, 'fresh': True,
     }
     rec.update(overrides)
