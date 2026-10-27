@@ -519,6 +519,38 @@ router's **web** `GET /api/system/deviceinfo` `UpTime` field — not from the
 TR-098 `InternetGatewayDevice.DeviceInfo.UpTime` parameter, which this firmware
 does not expose here. The bridge never publishes its own process uptime as
 device uptime, and when no hardware reading exists the field is omitted.
+Between collections, native `uptime` and `system-stats.uptime` use a bounded
+estimate: the reported Huawei `UpTime` plus elapsed UTC seconds since that
+specific `deviceinfo` response, only within the telemetry TTL (maximum one hour;
+web-only sources retain their ten-minute maximum). Elapsed time uses the same
+integer UTC seconds as native `time`, keeping `time - uptime` stable for a reused
+sample with less than one second of quantization. The CPU sample timestamp and
+bridge fetch/start times are not substitutes. Every inform rechecks this bound,
+so replaying a snapshot cannot extend freshness. Missing, future, expired or
+invalid samples omit native uptime, never fabricate zero. Legacy collectors
+without `device_observed_at` (including browserless results without endpoint
+timing) omit uptime until a timestamped direct collection arrives. Local UniFi
+status separates the raw `reported_seconds`, current `estimated_seconds` and
+`sent_seconds`; this projection is not another measured Huawei value.
+A fresh lower uptime is accepted immediately as reported, without a monotonic
+clamp that could hide an actual CPE reboot. Restarting the bridge does not reset
+this source or change virtual identity/profile/keys when persistent state is
+preserved. A bridge outage can still make the existing AP offline in UniFi;
+this does not forge connectivity or create a replacement AP. A controlled
+recreation of both bridge services was checked against Network 11.0.89:
+controller records, adoption and BSSIDs were retained, while active routers'
+uptimes continued advancing independently of the new bridge process. The
+existing disconnected router also remained registered and adopted, not removed.
+This validates controller API continuity; individual UI display aliases are not
+assumed to represent the same clock.
+
+Transient telemetry/inform failures do not clear adoption. A decoded, validated
+controller `setdefault` still intentionally resets the virtual AP's adoption
+metadata; recurring requests must be diagnosed at the controller, not suppressed.
+A missing auth-state file is still treated as factory state: preserve the
+`bridge-data` volume, state directory and identity registries across restarts.
+These local regression checks do not establish why a controller sent `setdefault`
+or prove that an operational state file has never been lost.
 Absolute memory bytes (`sys_stats.mem_total`/`mem_used`), load averages,
 temperature and air/retry/satisfaction metrics are never invented.
 
