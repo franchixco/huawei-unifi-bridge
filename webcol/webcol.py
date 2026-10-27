@@ -191,6 +191,7 @@ def normalize_browserless(raw, now=None):
               'usage': p.get('usage')} for p in profiles]
     return {'ok': True, 'transport': 'browserless', 'logged_in': True,
             'clients': clients, 'ssids': ssids, 'device': device,
+            'device_observed_at': raw.get('device_observed_at'),
             'inventory': wlan,
             'version': device.get('software_version'),
             'stats': stats, 'stats_reason': None if stats is not None else 'unsupported',
@@ -238,6 +239,7 @@ def merge_into_data(host, result, now=None):
              'router_ip': router_ip(host), 'ssids': result.get('ssids', []),
              'clients': clients, 'transport': result.get('transport'),
              'device': result.get('device'), 'inventory': result.get('inventory'),
+             'device_observed_at': result.get('device_observed_at'),
              'stats': result.get('stats'), 'stats_reason': result.get('stats_reason'),
              'stats_observed_at': result.get('stats_observed_at') if result.get('stats') else None,
              'topology_supported': result.get('topology_supported'),
@@ -293,6 +295,7 @@ def snapshot_webonly(now=None) -> dict[str, Any]:
     for host, entry in entries.items():
         seen = entry.get('observed_at')
         routers[host] = {**entry, 'last_seen': seen, 'source_type': entry.get('source_type'),
+                        'ttl_seconds': TTL_SECONDS,
                          'fresh': bool(seen) and 0 <= now - seen <= TTL_SECONDS}
     return {'schema_version': webonly.SCHEMA_VERSION, 'updated_at': updated_at,
             'ttl_seconds': TTL_SECONDS, 'routers': routers}
@@ -312,12 +315,14 @@ def snapshot(now=None) -> dict[str, Any]:
         clients = entry.get('clients') or {}
         stats_at = entry.get('stats_observed_at')
         view[host] = {'updated_at': refreshed, 'observed_at': refreshed,
+                      'ttl_seconds': TTL_SECONDS,
                       'serial': entry.get('serial'),
                       'router_ip': entry.get('router_ip'),
                       'version': entry.get('version'), 'clients': len(clients),
                       'ssids': entry.get('ssids', []),
                       'transport': entry.get('transport'),
                       'device': entry.get('device'),
+                      'device_observed_at': entry.get('device_observed_at'),
                       'inventory': entry.get('inventory'),
                       'stats': entry.get('stats'), 'stats_reason': entry.get('stats_reason'),
                       'stats_observed_at': stats_at,
@@ -394,6 +399,7 @@ LOGIN_AND_EXTRACT = (
     }
 
     const di = await jget("/api/system/deviceinfo");
+    const deviceObservedAt = Date.now() / 1000;
     if (!di || typeof di !== "object" || Array.isArray(di) ||
         typeof di.SoftwareVersion !== "string" || !di.SoftwareVersion) {
         return {ok: false, stage: "deviceinfo-schema", logged_in: true};
@@ -422,7 +428,8 @@ LOGIN_AND_EXTRACT = (
     // Logout runs as a separate bounded evaluate afterwards; failing here must
     // still report the extraction and leave the session for that cleanup.
     return {ok: true, logged_in: true,
-            raw: {deviceinfo: di, hostinfo, wifi, guest, processstatus}};
+            raw: {deviceinfo: di, device_observed_at: deviceObservedAt,
+                  hostinfo, wifi, guest, processstatus}};
 }"""
 )
 
@@ -963,9 +970,11 @@ def handler(collector, service=None, loop=None, service_error=None):
                                        'routers': {host: {'router_ip': state['router_ip'],
                                                           'fresh': state['fresh'],
                                                           'observed_at': state['observed_at'],
+                                                          'ttl_seconds': state['ttl_seconds'],
                                                           'serial': state['serial'],
                                                           'transport': state['transport'],
                                                           'device': state['device'],
+                                                          'device_observed_at': state['device_observed_at'],
                                                           'inventory': state['inventory'],
                                                           'stats': state['stats'],
                                                           'stats_reason': state['stats_reason'],

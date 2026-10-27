@@ -212,6 +212,15 @@ def _load(name, filename):
 
 
 class BrowserlessNormalizationTests(unittest.TestCase):
+    def test_fallback_preserves_device_read_time_without_refreshing_it(self):
+        webcol = _load('webcol_mod_uptime_timestamp', 'webcol.py')
+        observed = 1700000000.25
+        raw = self.raw(device_observed_at=observed)
+        normalized = webcol.normalize_browserless(raw, now=observed + 8)
+        self.assertEqual(normalized['device_observed_at'], observed)
+        undated = webcol.normalize_browserless(self.raw(), now=observed + 8)
+        self.assertIsNone(undated['device_observed_at'])
+
     SERIAL = 'SYNTHSN0001'
 
     def raw(self, **overrides):

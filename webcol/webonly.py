@@ -179,6 +179,7 @@ def build_record(host, result, pin, now=None):
         'serial': serial,
         'source_type': SOURCE_TYPE,
         'device': {key: device.get(key) for key in _DEVICE_FIELDS},
+        'device_observed_at': result.get('device_observed_at'),
         'clients': clients,
         'inventory': {'profiles': [_clean_profile(p) for p in profiles]},
         'stats': _clean_stats(result.get('stats')),

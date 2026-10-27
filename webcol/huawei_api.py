@@ -997,6 +997,7 @@ class HuaweiDirectClient:
         try:
             self.login()
             deviceinfo = parse_deviceinfo(self._get_json(PATH_DEVICE_INFO, 'deviceinfo'))
+            device_observed_at = time.time()
             if deviceinfo is None:
                 raise CollectionError('deviceinfo-schema')
             hostinfo = parse_hostinfo(self._get_json(PATH_HOST_INFO, 'hostinfo'))
@@ -1022,6 +1023,7 @@ class HuaweiDirectClient:
                                  'standard': p['standard'], 'usage': p['usage']}
                                 for p in wlanguide['profiles']],
                       'inventory': wlanguide, 'device': deviceinfo,
+                      'device_observed_at': device_observed_at,
                       'version': deviceinfo.get('software_version'),
                       'stats': stats, 'stats_reason': stats_reason,
                       'stats_observed_at': time.time() if stats is not None else None,
